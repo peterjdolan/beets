@@ -14,3 +14,4 @@ resources:
     fields
     logging
     prompts
+    progress_bars

@@ -14,6 +14,7 @@
 
 """Use command-line tools to check for audio file corruption."""
 
+import concurrent.futures
 import errno
 import os
 import shlex
@@ -25,7 +26,7 @@ import confuse
 from beets import importer, ui
 from beets.plugins import BeetsPlugin
 from beets.ui import Subcommand
-from beets.util import displayable_path, par_map
+from beets.util import displayable_path
 
 
 class CheckerCommandError(Exception):
@@ -137,6 +138,7 @@ class BadFiles(BeetsPlugin):
         error_lines = []
 
         if status > 0:
+            success = False
             error_lines.append(
                 f"{ui.colorize('text_error', dpath)}: checker exited with"
                 f" status {status}"
@@ -145,6 +147,7 @@ class BadFiles(BeetsPlugin):
                 error_lines.append(f"  {line}")
 
         elif errors > 0:
+            success = False
             error_lines.append(
                 f"{ui.colorize('text_warning', dpath)}: checker found"
                 f" {status} errors or warnings"
@@ -152,9 +155,10 @@ class BadFiles(BeetsPlugin):
             for line in output:
                 error_lines.append(f"  {line}")
         elif self.verbose:
+            success = True
             error_lines.append(f"{ui.colorize('text_success', dpath)}: ok")
 
-        return error_lines
+        return success, error_lines
 
     def on_import_task_start(self, task, session):
         if not self.config["check_on_import"].get(False):
@@ -163,9 +167,8 @@ class BadFiles(BeetsPlugin):
         checks_failed = []
 
         for item in task.items:
-            error_lines = self.check_item(item)
-            if error_lines:
-                checks_failed.append(error_lines)
+            _, error_lines = self.check_item(item)
+            checks_failed.append(error_lines)
 
         if checks_failed:
             task._badfiles_checks_failed = checks_failed
@@ -200,10 +203,19 @@ class BadFiles(BeetsPlugin):
         self.verbose = opts.verbose
 
         def check_and_print(item):
-            for error_line in self.check_item(item):
-                ui.print_(error_line)
+            success, error_lines = self.check_item(item)
+            if not success:
+                for line in error_lines:
+                    ui.print_(line)
 
-        par_map(check_and_print, items)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for _ in ui.iprogress_bar(
+                executor.map(check_and_print, items),
+                desc="Checking",
+                unit="item",
+                total=len(items),
+            ):
+                pass
 
     def commands(self):
         bad_command = Subcommand(
