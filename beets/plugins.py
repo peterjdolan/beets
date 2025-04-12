@@ -14,24 +14,17 @@
 
 """Support for beets plugins."""
 
-from __future__ import annotations
-
 import abc
 import inspect
 import re
 import traceback
 from collections import defaultdict
 from functools import wraps
-from typing import TYPE_CHECKING
 
 import mediafile
 
 import beets
 from beets import logging
-
-if TYPE_CHECKING:
-    from beets.autotag.hooks import AlbumInfo, TrackInfo
-
 
 PLUGIN_NAMESPACE = "beetsplug"
 
@@ -297,7 +290,7 @@ def load_plugins(names=()):
             )
 
 
-_instances: dict[type[BeetsPlugin], BeetsPlugin] = {}
+_instances = {}
 
 
 def find_plugins():
@@ -404,30 +397,20 @@ def item_candidates(item, artist, title):
         yield from plugin.item_candidates(item, artist, title)
 
 
-def album_for_id(_id: str) -> AlbumInfo | None:
-    """Get AlbumInfo object for the given ID string.
-
-    A single ID can yield just a single album, so we return the first match.
-    """
+def album_for_id(album_id):
+    """Get AlbumInfo objects for a given ID string."""
     for plugin in find_plugins():
-        if info := plugin.album_for_id(_id):
-            send("albuminfo_received", info=info)
-            return info
-
-    return None
+        album = plugin.album_for_id(album_id)
+        if album:
+            yield album
 
 
-def track_for_id(_id: str) -> TrackInfo | None:
-    """Get TrackInfo object for the given ID string.
-
-    A single ID can yield just a single track, so we return the first match.
-    """
+def track_for_id(track_id):
+    """Get TrackInfo objects for a given ID string."""
     for plugin in find_plugins():
-        if info := plugin.track_for_id(_id):
-            send("trackinfo_received", info=info)
-            return info
-
-    return None
+        track = plugin.track_for_id(track_id)
+        if track:
+            yield track
 
 
 def template_funcs():
