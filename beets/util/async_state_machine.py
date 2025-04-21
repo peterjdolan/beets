@@ -39,35 +39,39 @@ async def create_thumbnail(task: ImageTask) -> AsyncGenerator[ImageTask, None]:
     yield task
 
 # Define the state machine's transition graph
-transition_graph = {
+transition_graph = (
     State(
         id="READ",
         max_queue_size=10,  # Cap incoming images to manage memory requirements
         concurrency=2,      # Parse multiple images concurrently
         handler=read_image,
-    ): {
-        # Route to error state if there's an error
-        "ERROR": lambda t: t.error,
-        # Route based on image size
-        "PROCESS_SMALL": lambda t: t.size < 1024 * 1024,
-        "PROCESS_LARGE": lambda t: t.size >= 1024 * 1024,
-    },
+        transitions=(
+            # Route to error state if there's an error
+            ("ERROR", lambda t: t.error),
+            # Route based on image size
+            ("PROCESS_SMALL", lambda t: t.size < 1024 * 1024),
+            # Route to large state by default
+            ("PROCESS_LARGE", lambda _: True),
+        ),
+    ),
     State(
         id="PROCESS_SMALL",
         max_queue_size=20,   # More queue capacity for quick processing
         concurrency=4,       # High concurrency for light tasks
         handler=process_small_image,
-    ): {
-        "THUMBNAIL": lambda _: True,
-    },
+        transitions=(
+            ("THUMBNAIL", lambda _: True),
+        ),
+    ),
     State(
         id="PROCESS_LARGE",
         max_queue_size=2,    # Limited queue for memory-intensive tasks
         concurrency=1,       # Process one at a time to manage resources
         handler=process_large_image,
-    ): {
-        "THUMBNAIL": lambda _: True,
-    },
+        transitions=(
+            ("THUMBNAIL", lambda _: True),
+        ),
+    ),
     State(
         id="THUMBNAIL",
         max_queue_size=5,
@@ -75,14 +79,16 @@ transition_graph = {
         handler=create_thumbnail,
         accumulate_outputs=True,  # Collect final results
         accumulator_max_queue_size=10,
-    ): {},
+        transitions=(),
+    ),
     State(
         id="ERROR",
         max_queue_size=10,
         concurrency=1,
         accumulate_outputs=True,  # Collect errors for reporting
-    ): {},
-}
+        transitions=(),
+    ),
+)
 
 # Use the state machine
 async with AsyncStateMachine(transition_graph) as machine:
@@ -102,11 +108,11 @@ async with AsyncStateMachine(transition_graph) as machine:
     await machine.empty_wait()
 
     # Collect successful results
-    async for result in machine.accumulated_values("THUMBNAIL"):
+    async for result in machine.accumulated("THUMBNAIL"):
         print(f"Processed image with history: {result.history}")
 
     # Collect errors
-    async for error in machine.accumulated_values("ERROR"):
+    async for error in machine.accumulated("ERROR"):
         print(f"Failed to process image: {error.error}")
 ```
 """
@@ -160,6 +166,7 @@ class StateQueue(asyncio.Queue[T]):
     def __repr__(self) -> str:
         return f"<StateQueue id={self.id}, {super().__repr__()}>"
 
+
 @dataclass(frozen=True)
 class State(Generic[T]):
     # The identifier for the state
@@ -212,12 +219,17 @@ class State(Generic[T]):
     def __post_init__(self):
         # Use object.__setattr__ to set the queue since the class is frozen
         object.__setattr__(
-            self, "_queue", StateQueue(id=f"{self.id}-queue", maxsize=self.max_queue_size)
+            self,
+            "_queue",
+            StateQueue(id=f"{self.id}-queue", maxsize=self.max_queue_size),
         )
         object.__setattr__(
             self,
             "_accumulator",
-            StateQueue(id=f"{self.id}-accumulator", maxsize=self.max_accumulator_queue_size),
+            StateQueue(
+                id=f"{self.id}-accumulator",
+                maxsize=self.max_accumulator_queue_size,
+            ),
         )
 
         if self.concurrency > self.max_queue_size:
@@ -285,20 +297,27 @@ class AsyncStateMachine(AbstractAsyncContextManager, Generic[T]):
 
     For example:
     ```python
-    transition_graph = {
-        State(
-            id="START",
-            max_queue_size=10,
-            handler=lambda x: yield x * 2,  # Multiply inputs by 2
-        ): {"END": lambda _: True},
-        State(
-            id="END",
-            max_queue_size=10,
-            handler=lambda x: yield x * 3,  # Multiply inputs by 3
-            accumulate=True,
-            accumulator_max_queue_size=10,
-        ): {},
-    }
+    transition_graph = (
+        (
+            State(
+                id="START",
+                max_queue_size=10,
+                handler=lambda x: yield x * 2,  # Multiply inputs by 2
+            ),
+            (
+                ("END", lambda x: True),
+            ),
+        (
+            State(
+                id="END",
+                max_queue_size=10,
+                handler=lambda x: yield x * 3,  # Multiply inputs by 3
+                accumulate=True,
+                accumulator_max_queue_size=10,
+            ),
+            tuple(),
+        ),
+    )
     async with AsyncStateMachine(transition_graph) as sm:
         inject_tasks = []
         for i in range(500):
