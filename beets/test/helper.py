@@ -657,7 +657,7 @@ class AsIsImporterMixin:
 
     def run_asis_importer(self, **kwargs):
         importer = self.setup_importer(autotag=False, **kwargs)
-        asyncio.run(importer.run())
+        importer.run()
         return importer
 
 

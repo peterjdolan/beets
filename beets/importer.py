@@ -28,8 +28,9 @@ from bisect import bisect_left, insort
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from tempfile import mkdtemp
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Generator, Iterable, Sequence
 
 import mediafile
 
@@ -346,17 +347,17 @@ class ImportSession:
 
         # Set up the pipeline.
         if self.query is None:
-            stages = [read_tasks(self)]
+            stages = [partial(read_tasks, self)]
         else:
-            stages = [query_tasks(self)]
+            stages = [partial(query_tasks, self)]
 
         # In pretend mode, just log what would otherwise be imported.
         if self.config["pretend"]:
-            stages += [log_files(self)]
+            stages += [partial(log_files, self)]
         else:
             if self.config["group_albums"] and not self.config["singletons"]:
                 # Split directory tasks into one task for each album.
-                stages += [group_albums(self)]
+                stages += [partial(group_albums, self)]
 
             # These stages either talk to the user to get a decision or,
             # in the case of a non-autotagged import, just choose to
@@ -364,17 +365,17 @@ class ImportSession:
             # also add the music to the library database, so later
             # stages need to read and write data from there.
             if self.config["autotag"]:
-                stages += [lookup_candidates(self), user_query(self)]
+                stages += [partial(lookup_candidates, self), partial(user_query, self)]
             else:
-                stages += [import_asis(self)]
+                stages += [partial(import_asis, self)]
 
             # Plugin stages.
             for stage_func in plugins.early_import_stages():
-                stages.append(plugin_stage(self, stage_func))
+                stages.append(partial(plugin_stage, self, stage_func))
             for stage_func in plugins.import_stages():
-                stages.append(plugin_stage(self, stage_func))
+                stages.append(partial(plugin_stage, self, stage_func))
 
-            stages += [manipulate_files(self)]
+            stages += [partial(manipulate_files, self)]
 
         pl = pipeline.Pipeline(stages)
 
@@ -1491,8 +1492,8 @@ def _extend_pipeline(tasks, *stages):
 
 # Full-album pipeline stages.
 
-
-def read_tasks(session: ImportSession):
+@pipeline.stage
+def read_tasks(session: ImportSession, _: ImportTask | None) -> Generator[ImportTask, None, None]:
     """A generator yielding all the albums (as ImportTask objects) found
     in the user-specified list of paths. In the case of a singleton
     import, yields single-item tasks instead.
@@ -1515,8 +1516,8 @@ def read_tasks(session: ImportSession):
     if skipped:
         log.info("Skipped {0} paths.", skipped)
 
-
-def query_tasks(session: ImportSession):
+@pipeline.stage
+def query_tasks(session: ImportSession, _: ImportTask | None) -> Generator[ImportTask, None, None]:
     """A generator that works as a drop-in-replacement for read_tasks.
     Instead of finding files from the filesystem, a query is used to
     match items from the library.
@@ -1546,7 +1547,7 @@ def query_tasks(session: ImportSession):
 
 
 @pipeline.mutator_stage
-def lookup_candidates(session: ImportSession, task: ImportTask):
+def lookup_candidates(session: ImportSession, task: ImportTask) -> None:
     """A coroutine for performing the initial MusicBrainz lookup for an
     album. It accepts lists of Items and yields
     (items, cur_artist, cur_album, candidates, rec) tuples. If no match
@@ -1568,7 +1569,7 @@ def lookup_candidates(session: ImportSession, task: ImportTask):
 
 
 @pipeline.stage
-def user_query(session: ImportSession, task: ImportTask):
+def user_query(session: ImportSession, task: ImportTask) -> ImportTask | pipeline.MultiMessage | pipeline.BUBBLE:
     """A coroutine for interfacing with the user about the tagging
     process.
 
@@ -1682,7 +1683,7 @@ def resolve_duplicates(session: ImportSession, task: ImportTask):
 
 
 @pipeline.mutator_stage
-def import_asis(session: ImportSession, task: ImportTask):
+def import_asis(session: ImportSession, task: ImportTask) -> None:
     """Select the `action.ASIS` choice for all tasks.
 
     This stage replaces the initial_lookup and user_query stages
@@ -1786,7 +1787,8 @@ def log_files(session: ImportSession, task: ImportTask):
             log.info("  {0}", displayable_path(item["path"]))
 
 
-def group_albums(session: ImportSession):
+@pipeline.stage
+def group_albums(session: ImportSession, task: ImportTask | None) -> Generator[ImportTask, None, None]:
     """A pipeline stage that groups the items of each task into albums
     using their metadata.
 
@@ -1797,20 +1799,18 @@ def group_albums(session: ImportSession):
     def group(item):
         return (item.albumartist or item.artist, item.album)
 
-    task = None
-    while True:
-        task = yield task
-        if task.skip:
-            continue
-        tasks = []
-        sorted_items: list[library.Item] = sorted(task.items, key=group)
-        for _, items in itertools.groupby(sorted_items, group):
-            l_items = list(items)
-            task = ImportTask(task.toppath, [i.path for i in l_items], l_items)
-            tasks += task.handle_created(session)
-        tasks.append(SentinelImportTask(task.toppath, task.paths))
+    if task.skip:
+        return
 
-        task = pipeline.multiple(tasks)
+    tasks = []
+    sorted_items: list[library.Item] = sorted(task.items, key=group)
+    for _, items in itertools.groupby(sorted_items, group):
+        l_items = list(items)
+        task = ImportTask(task.toppath, [i.path for i in l_items], l_items)
+        tasks += task.handle_created(session)
+    tasks.append(SentinelImportTask(task.toppath, task.paths))
+
+    yield from tasks
 
 
 MULTIDISC_MARKERS = (rb"dis[ck]", rb"cd")

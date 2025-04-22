@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from typing import AsyncGenerator, Callable, Generator, Generic, Iterable, TypeVar, Literal
+from typing import Any, AsyncGenerator, Callable, Generator, Generic, Iterable, TypeVar, Literal
 from beets.util import parallel, async_state_machine as asm
 
 from typing_extensions import TypeVar
@@ -71,7 +71,7 @@ def multiple(messages: Iterable[T]) -> MultiMessage[T]:
 # a refactor)
 R = TypeVar("R")
 StageFn = Callable[
-    [T | None], R | Generator[R, None, None] | MultiMessage[R] | BUBBLE
+    [T | None], R | Generator[R, None, None] | MultiMessage[R] | BUBBLE | None
 ]
 MutatorStageFn = Callable[[T | None], None]
 _PipelineStateHandler = Callable[[T | None], Generator[R, None, None]]
@@ -90,10 +90,7 @@ def _allmsgs(obj: R | MultiMessage[R] | BUBBLE) -> list[R]:
         return [obj]
 
 
-def stage(
-    func: StageFn | None = None,
-    local: bool = False,
-) -> _PipelineStateHandler:
+def stage(func: StageFn) -> _PipelineStateHandler:
     """Decorate a function to become a simple stage.
 
     >>> @stage
@@ -108,18 +105,15 @@ def stage(
     """
 
     @functools.wraps(func)
-    async def handler_fn(task: T) -> AsyncGenerator[R, None]:
-        if local:
-            vals = func(task)
-        else:
-            future = parallel.submit(func, task)
-            while not future.done():
-                await asyncio.sleep(0.01)
-            if future.exception():
-                print(f"Pipeline stage {func.__name__} raised an exception: {future.exception()}")
-                return
+    async def handler_fn(*args: list[Any | T], **kwargs: Any) -> AsyncGenerator[R, None]:
+        future = parallel.submit(func, *args, **kwargs)
+        while not future.done():
+            await asyncio.sleep(0.01)
+        if future.exception():
+            print(f"Pipeline stage {func.__name__} raised an exception: {future.exception()}")
+            return
 
-            vals = future.result()
+        vals = future.result()
 
         if isinstance(vals, Generator):
             for val in vals:
@@ -147,8 +141,9 @@ def mutator_stage(func: MutatorStageFn) -> _PipelineStateHandler:
     """
 
     @functools.wraps(func)
-    async def handler_fn(task: T) -> AsyncGenerator[R, None]:
-        future = parallel.submit(func, task)
+    async def handler_fn(*args: list[Any | T], **kwargs: Any) -> AsyncGenerator[R, None]:
+        task = args[-1]
+        future = parallel.submit(func, *args, **kwargs)
         while not future.done():
             await asyncio.sleep(0.01)
         if future.exception():
@@ -178,7 +173,10 @@ class Pipeline:
         if len(self.stage_handler_fns) < 2:
             raise ValueError("pipeline must have at least two stages")
 
-    async def run_sequential(self):
+    def run_sequential(self):
+        return asyncio.run(self.arun_sequential())
+
+    async def arun_sequential(self):
         """Run the pipeline sequentially in the current thread. The
         stages are run one after the other. Only the first coroutine
         in each stage is used.
@@ -186,18 +184,21 @@ class Pipeline:
         async for _ in self.pull():
             pass
 
-    async def run_parallel(self, queue_size=DEFAULT_QUEUE_SIZE):
-        """Run the pipeline in parallel using one thread per stage. The
-        messages between the stages are stored in queues of the given
-        size.
-        """
+    def run_parallel(self, queue_size=DEFAULT_QUEUE_SIZE):
+        return asyncio.run(self.arun_parallel(queue_size))
+
+    async def arun_parallel(self, queue_size=DEFAULT_QUEUE_SIZE):
         graph = asm.Graph(
             (
                 asm.State(
+                    # TODO: Add naming to the pipeline stages, so that we can produce more
+                    # informative log messages.
                     id=f"stage_{i}",
                     handler=stage_handler_fn,
+                    # TODO: Add user interaction flags to the pipeline stages.
                     user_interaction=False,
                     max_queue_size=queue_size,
+                    concurrency=1,
                 ),
                 ((f"stage_{i + 1}", lambda _: True),)
                 if i < len(self.stage_handler_fns) - 1
@@ -220,7 +221,7 @@ class Pipeline:
         yield any messages. Only the first coroutine in each stage is used
         """
         handler_fns = self.stage_handler_fns
-        async for initial in handler_fns[0]:
+        async for initial in handler_fns[0](None):
             prevs = [initial]
             for fn in handler_fns[1:]:
                 next_msgs = []
@@ -238,7 +239,7 @@ if __name__ == "__main__":
 
     # Test a normally-terminating pipeline both in sequence and
     # in parallel.
-    @stage(local=True)
+    @stage
     def produce(_: int | None) -> Generator[int, None, None]:
         for i in range(5):
             print("generating", i)
@@ -257,16 +258,16 @@ if __name__ == "__main__":
         print("received", i)
 
     ts_start = time.time()
-    asyncio.run(Pipeline([produce, work, consume]).run_sequential())
+    Pipeline([produce, work, consume]).run_sequential()
     ts_seq = time.time()
-    asyncio.run(Pipeline([produce, work, consume]).run_parallel())
+    Pipeline([produce, work, consume]).run_parallel()
     ts_par = time.time()
     print("Sequential time:", ts_seq - ts_start)
     print("Parallel time:", ts_par - ts_seq)
     print()
 
     # Test a pipeline that raises an exception.
-    @stage(local=True)
+    @stage
     def exc_produce(_: int | None) -> Generator[int, None, None]:
         for i in range(10):
             print("generating %i" % i)
@@ -285,4 +286,4 @@ if __name__ == "__main__":
     def exc_consume(num: int) -> None:
         print("received %i" % num)
 
-    asyncio.run(Pipeline([exc_produce, exc_work, exc_consume]).run_parallel(1))
+    Pipeline([exc_produce, exc_work, exc_consume]).run_parallel(1)
