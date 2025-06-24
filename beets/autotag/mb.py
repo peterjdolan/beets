@@ -196,7 +196,10 @@ def _preferred_release_event(release: dict[str, Any]) -> tuple[str, str]:
             except KeyError:
                 pass
 
-    return (cast("str", release.get("country")), cast("str", release.get("date")))
+    return (
+        cast("str", release.get("country")),
+        cast("str", release.get("date")),
+    )
 
 
 def _multi_artist_credit(

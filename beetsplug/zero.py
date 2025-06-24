@@ -99,7 +99,7 @@ class ZeroPlugin(BeetsPlugin):
             self._log.error("invalid field: {0}", field)
         elif field in ("id", "path", "album_id"):
             self._log.warning(
-                "field '{0}' ignored, zeroing " "it would be dangerous", field
+                "field '{0}' ignored, zeroing it would be dangerous", field
             )
         else:
             try:
