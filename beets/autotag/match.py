@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import datetime
 import re
-from collections.abc import Iterable, Sequence
 from enum import IntEnum
 from functools import cache
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar, cast
@@ -40,6 +39,8 @@ from beets.autotag import (
 from beets.util import plurality
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
     from beets.library import Item
 
 # Artist signals that indicate "various artists". These are used at the
@@ -245,7 +246,7 @@ def distance(
     if album_info.media:
         # Preferred media options.
         patterns = config["match"]["preferred"]["media"].as_str_seq()
-        patterns = cast(Sequence[str], patterns)
+        patterns = cast("Sequence[str]", patterns)
         options = [re.compile(r"(\d+x)?(%s)" % pat, re.I) for pat in patterns]
         if options:
             dist.add_priority("media", album_info.media, options)
@@ -283,7 +284,7 @@ def distance(
 
     # Preferred countries.
     patterns = config["match"]["preferred"]["countries"].as_str_seq()
-    patterns = cast(Sequence[str], patterns)
+    patterns = cast("Sequence[str]", patterns)
     options = [re.compile(pat, re.I) for pat in patterns]
     if album_info.country and options:
         dist.add_priority("country", album_info.country, options)
@@ -448,7 +449,7 @@ def _add_candidate(
 
     # Discard matches without required tags.
     for req_tag in cast(
-        Sequence[str], config["match"]["required"].as_str_seq()
+        "Sequence[str]", config["match"]["required"].as_str_seq()
     ):
         if getattr(info, req_tag) is None:
             log.debug("Ignored. Missing required tag: {0}", req_tag)
@@ -462,7 +463,7 @@ def _add_candidate(
 
     # Skip matches with ignored penalties.
     penalties = [key for key, _ in dist]
-    ignored = cast(Sequence[str], config["match"]["ignored"].as_str_seq())
+    ignored = cast("Sequence[str]", config["match"]["ignored"].as_str_seq())
     for penalty in ignored:
         if penalty in penalties:
             log.debug("Ignored. Penalty: {0}", penalty)
@@ -499,8 +500,8 @@ def tag_album(
     """
     # Get current metadata.
     likelies, consensus = current_metadata(items)
-    cur_artist = cast(str, likelies["artist"])
-    cur_album = cast(str, likelies["album"])
+    cur_artist = cast("str", likelies["artist"])
+    cur_album = cast("str", likelies["album"])
     log.debug("Tagging {0} - {1}", cur_artist, cur_album)
 
     # The output result, keys are the MB album ID.
