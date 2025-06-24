@@ -474,7 +474,7 @@ class Distance:
         matched against `value2`.
         """
         if isinstance(value1, re.Pattern):
-            value2 = cast(str, value2)
+            value2 = cast("str", value2)
             return bool(value1.match(value2))
         return value1 == value2
 

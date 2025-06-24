@@ -126,8 +126,8 @@ class FormattedMapping(Mapping[str, str]):
             value = value.decode("utf-8", "ignore")
 
         if self.for_path:
-            sep_repl = cast(str, beets.config["path_sep_replace"].as_str())
-            sep_drive = cast(str, beets.config["drive_sep_replace"].as_str())
+            sep_repl = cast("str", beets.config["path_sep_replace"].as_str())
+            sep_drive = cast("str", beets.config["drive_sep_replace"].as_str())
 
             if re.match(r"^\w:", value):
                 value = re.sub(r"(?<=^\w):", sep_drive, value)

@@ -19,9 +19,8 @@ from __future__ import annotations
 import re
 import traceback
 from collections import Counter
-from collections.abc import Iterator, Sequence
 from itertools import product
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urljoin
 
 import musicbrainzngs
@@ -36,6 +35,9 @@ from beets.util.id_extractors import (
     extract_discogs_id_regex,
     spotify_id_regex,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
 
 VARIOUS_ARTISTS_ID = "89ad4ac3-39f7-470e-963a-56509c546377"
 
@@ -184,7 +186,7 @@ def _preferred_release_event(release: dict[str, Any]) -> tuple[str, str]:
     default release event if a preferred event is not found.
     """
     countries = config["match"]["preferred"]["countries"].as_str_seq()
-    countries = cast(Sequence, countries)
+    countries = cast("Sequence", countries)
 
     for country in countries:
         for event in release.get("release-event-list", {}):
@@ -194,7 +196,10 @@ def _preferred_release_event(release: dict[str, Any]) -> tuple[str, str]:
             except KeyError:
                 pass
 
-    return (cast(str, release.get("country")), cast(str, release.get("date")))
+    return (
+        cast("str", release.get("country")),
+        cast("str", release.get("date")),
+    )
 
 
 def _multi_artist_credit(

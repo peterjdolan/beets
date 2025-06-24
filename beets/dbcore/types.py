@@ -79,7 +79,7 @@ class Type(ABC, Generic[T, N]):
         # Note that this default implementation only makes sense for T = N.
         # It would be better to implement `null()` only in subclasses, or
         # have a field null_type similar to `model_type` and use that here.
-        return cast(N, self.model_type())
+        return cast("N", self.model_type())
 
     def format(self, value: N | T) -> str:
         """Given a value of this type, produce a Unicode string
@@ -115,7 +115,7 @@ class Type(ABC, Generic[T, N]):
         else:
             # TODO This should eventually be replaced by
             # `self.model_type(value)`
-            return cast(T, value)
+            return cast("T", value)
 
     def from_sql(self, sql_value: SQLiteType) -> T | N:
         """Receives the value stored in the SQL backend and return the
