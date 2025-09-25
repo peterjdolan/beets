@@ -14,6 +14,8 @@
 
 """Converts tracks or albums to external directory"""
 
+import concurrent.futures
+import functools
 import logging
 import os
 import shlex
@@ -344,6 +346,7 @@ class ConvertPlugin(BeetsPlugin):
         keep_new,
         path_formats,
         fmt,
+        item,
         pretend=False,
         link=False,
         hardlink=False,
@@ -351,137 +354,131 @@ class ConvertPlugin(BeetsPlugin):
         """A pipeline thread that converts `Item` objects from a
         library.
         """
+        quiet = self.config["quiet"].get(bool)
         command, ext = get_format(fmt)
-        item, original, converted = None, None, None
-        while True:
-            item = yield (item, original, converted)
-            dest = item.destination(basedir=dest_dir, path_formats=path_formats)
+        original, converted = None, None
 
-            # Ensure that desired item is readable before processing it. Needed
-            # to avoid any side-effect of the conversion (linking, keep_new,
-            # refresh) if we already know that it will fail.
-            try:
-                mediafile.MediaFile(util.syspath(item.path))
-            except mediafile.UnreadableFileError as exc:
-                self._log.error("Could not open file to convert: {}", exc)
-                continue
+        dest = item.destination(basedir=dest_dir, path_formats=path_formats)
 
-            # When keeping the new file in the library, we first move the
-            # current (pristine) file to the destination. We'll then copy it
-            # back to its old path or transcode it to a new path.
-            if keep_new:
-                original = dest
-                converted = item.path
-                if should_transcode(item, fmt):
-                    converted = replace_ext(converted, ext)
-            else:
-                original = item.path
-                if should_transcode(item, fmt):
-                    dest = replace_ext(dest, ext)
-                converted = dest
+        # Ensure that desired item is readable before processing it. Needed
+        # to avoid any side-effect of the conversion (linking, keep_new,
+        # refresh) if we already know that it will fail.
+        try:
+            mediafile.MediaFile(util.syspath(item.path))
+        except mediafile.UnreadableFileError as exc:
+            self._log.error("Could not open file to convert: {}", exc)
+            return
 
-            # Ensure that only one thread tries to create directories at a
-            # time. (The existence check is not atomic with the directory
-            # creation inside this function.)
-            if not pretend:
-                with _fs_lock:
-                    util.mkdirall(dest)
-
-            if os.path.exists(util.syspath(dest)):
-                self._log.info(
-                    "Skipping {.filepath} (target file exists)", item
-                )
-                continue
-
-            if keep_new:
-                if pretend:
-                    self._log.info(
-                        "mv {.filepath} {}",
-                        item,
-                        util.displayable_path(original),
-                    )
-                else:
-                    self._log.info(
-                        "Moving to {}", util.displayable_path(original)
-                    )
-                    util.move(item.path, original)
-
+        # When keeping the new file in the library, we first move the
+        # current (pristine) file to the destination. We'll then copy it
+        # back to its old path or transcode it to a new path.
+        if keep_new:
+            original = dest
+            converted = item.path
             if should_transcode(item, fmt):
-                linked = False
-                try:
-                    self.encode(command, original, converted, pretend)
-                except subprocess.CalledProcessError:
-                    continue
-            else:
-                linked = link or hardlink
-                if pretend:
-                    msg = "ln" if hardlink else ("ln -s" if link else "cp")
+                converted = replace_ext(converted, ext)
+        else:
+            original = item.path
+            if should_transcode(item, fmt):
+                dest = replace_ext(dest, ext)
+            converted = dest
 
-                    self._log.info(
-                        "{} {} {}",
-                        msg,
-                        util.displayable_path(original),
-                        util.displayable_path(converted),
-                    )
-                else:
-                    # No transcoding necessary.
-                    msg = (
-                        "Hardlinking"
-                        if hardlink
-                        else ("Linking" if link else "Copying")
-                    )
+        # Ensure that only one thread tries to create directories at a
+        # time. (The existence check is not atomic with the directory
+        # creation inside this function.)
+        if not pretend:
+            with _fs_lock:
+                util.mkdirall(dest)
 
-                    self._log.info("{} {.filepath}", msg, item)
+        if os.path.exists(util.syspath(dest)) and not quiet:
+            self._log.info("Skipping {.filepath} (target file exists)", item)
+            return
 
-                    if hardlink:
-                        util.hardlink(original, converted)
-                    elif link:
-                        util.link(original, converted)
-                    else:
-                        util.copy(original, converted)
-
+        if keep_new:
             if pretend:
-                continue
+                self._log.info(
+                    "mv {.filepath} {}",
+                    item,
+                    util.displayable_path(original),
+                )
+            else:
+                self._log.info("Moving to {}", util.displayable_path(original))
+                util.move(item.path, original)
 
-            id3v23 = self.config["id3v23"].as_choice([True, False, "inherit"])
-            if id3v23 == "inherit":
-                id3v23 = None
+        if should_transcode(item, fmt):
+            linked = False
+            try:
+                self.encode(command, original, converted, pretend)
+            except subprocess.CalledProcessError:
+                raise
+        else:
+            linked = link or hardlink
+            if pretend:
+                msg = "ln" if hardlink else ("ln -s" if link else "cp")
+
+                self._log.info(
+                    "{} {} {}",
+                    msg,
+                    util.displayable_path(original),
+                    util.displayable_path(converted),
+                )
+            else:
+                # No transcoding necessary.
+                msg = (
+                    "Hardlinking"
+                    if hardlink
+                    else ("Linking" if link else "Copying")
+                )
+
+                self._log.info("{} {.filepath}", msg, item)
+
+                if hardlink:
+                    util.hardlink(original, converted)
+                elif link:
+                    util.link(original, converted)
+                else:
+                    util.copy(original, converted)
+
+        if pretend:
+            return
+
+        id3v23 = self.config["id3v23"].as_choice([True, False, "inherit"])
+        if id3v23 == "inherit":
+            id3v23 = None
 
             # Write tags from the database to the file if requested
             if self.config["write_metadata"].get(bool):
                 item.try_write(path=converted, id3v23=id3v23)
 
-            if keep_new:
-                # If we're keeping the transcoded file, read it again (after
-                # writing) to get new bitrate, duration, etc.
-                item.path = converted
-                item.read()
-                item.store()  # Store new path and audio data.
+        if keep_new:
+            # If we're keeping the transcoded file, read it again (after
+            # writing) to get new bitrate, duration, etc.
+            item.path = converted
+            item.read()
+            item.store()  # Store new path and audio data.
 
-            if self.config["embed"] and not linked:
-                album = item._cached_album
-                if album and album.artpath:
-                    maxwidth = self._get_art_resize(album.artpath)
-                    self._log.debug(
-                        "embedding album art from {.art_filepath}", album
-                    )
-                    art.embed_item(
-                        self._log,
-                        item,
-                        album.artpath,
-                        maxwidth,
-                        itempath=converted,
-                        id3v23=id3v23,
-                    )
+        if self.config["embed"] and not linked:
+            album = item._cached_album
+            if album and album.artpath:
+                maxwidth = self._get_art_resize(album.artpath)
+                self._log.debug(
+                    "embedding album art from {.art_filepath}", album
+                )
+                art.embed_item(
+                    self._log,
+                    item,
+                    album.artpath,
+                    maxwidth,
+                    itempath=converted,
+                    id3v23=id3v23,
+                )
 
-            if keep_new:
-                plugins.send(
-                    "after_convert", item=item, dest=dest, keepnew=True
-                )
-            else:
-                plugins.send(
-                    "after_convert", item=item, dest=converted, keepnew=False
-                )
+        if keep_new:
+            plugins.send("after_convert", item=item, dest=dest, keepnew=True)
+        else:
+            plugins.send(
+                "after_convert", item=item, dest=converted, keepnew=False
+            )
 
     def copy_album_art(
         self,
@@ -762,11 +759,24 @@ class ConvertPlugin(BeetsPlugin):
         """Run the convert_item function for every items on as many thread as
         defined in threads
         """
-        convert = [
-            self.convert_item(
-                dest, keep_new, path_formats, fmt, pretend, link, hardlink
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=threads
+        ) as executor:
+            map_fn = functools.partial(
+                self.convert_item,
+                dest,
+                keep_new,
+                path_formats,
+                fmt,
+                pretend=pretend,
+                link=link,
+                hardlink=hardlink,
             )
-            for _ in range(threads)
-        ]
-        pipe = util.pipeline.Pipeline([iter(items), convert])
-        pipe.run_parallel()
+
+            for result in ui.iprogress_bar(
+                executor.map(map_fn, items),
+                desc="Converting",
+                unit="item",
+                total=len(items),
+            ):
+                pass
